@@ -1,284 +1,178 @@
-const initialOperations = [
-  { id: 'ship-1', type: 'Cooked meals', icon: '🍱', iconClass: 'meals', donor: 'Banquet Hall South', source: 'Banquet Hall South', destination: 'Night Shelter A', quantity: 40, unit: 'meals', status: 'transit', statusLabel: 'In transit', minutes: 18, progress: 74, rider: 'Aarav Mehta', capacity: '40 / 40', mode: 'Scooter', critical: false, color: 'lime', action: 'View route' },
-  { id: 'ship-2', type: 'Medical supplies', icon: '✚', iconClass: 'medical', donor: 'City Pharmacy', source: 'City Pharmacy', destination: 'Relief Camp 4', quantity: 12, unit: 'cold-chain kits', status: 'action', statusLabel: 'Needs rider', minutes: 42, progress: 0, rider: '3 nearby riders', capacity: '12 / 12', mode: 'Cold-chain', critical: true, color: 'orange', action: 'Find rider' },
-  { id: 'ship-3', type: 'Cooked meals', icon: '🍱', iconClass: 'meals', donor: 'Hostel 12 Mess', source: 'Hostel 12 Mess', destination: 'Shelter B', quantity: 60, unit: 'meals', status: 'reserving', statusLabel: 'Reservation at risk', minutes: 7, progress: 28, rider: 'Meera Joshi', capacity: '40 / 60', mode: 'Scooter', critical: true, color: 'orange', action: 'Ping rider', reservation: true },
-  { id: 'ship-4', type: 'Cooked meals', icon: '🍱', iconClass: 'meals', donor: 'Central Kitchen', source: 'Central Kitchen', destination: 'Community Kitchen', quantity: 80, unit: 'meals', status: 'transit', statusLabel: 'In transit', minutes: 33, progress: 61, rider: 'Kabir Singh', capacity: '40 / 80', mode: 'Cargo bike', critical: false, color: 'lime', action: 'View route' },
-  { id: 'ship-5', type: 'Ration kits', icon: '▦', iconClass: 'ration', donor: 'Fresh Mart', source: 'Fresh Mart', destination: 'Night Shelter A', quantity: 24, unit: 'kits', status: 'ready', statusLabel: 'Ready to match', minutes: 118, progress: 0, rider: 'Open allocation', capacity: '0 / 24', mode: 'Any vehicle', critical: false, color: 'blue', action: 'Find match' },
-  { id: 'ship-6', type: 'Cooked meals', icon: '🍱', iconClass: 'meals', donor: 'Community Pantry', source: 'Community Pantry', destination: 'Night Shelter A', quantity: 30, unit: 'meals', status: 'transit', statusLabel: 'In transit', minutes: 26, progress: 84, rider: 'Zoya Khan', capacity: '30 / 30', mode: 'Scooter', critical: false, color: 'lime', action: 'View route' },
-  { id: 'ship-7', type: 'Medical supplies', icon: '✚', iconClass: 'medical', donor: 'Green Cross', source: 'Green Cross', destination: 'Relief Camp 2', quantity: 8, unit: 'kits', status: 'delivered', statusLabel: 'Delivered', minutes: 0, progress: 100, rider: 'Sanjay Rao', capacity: '8 / 8', mode: 'Cold-chain', critical: false, color: 'blue', action: 'View receipt' },
-  { id: 'ship-8', type: 'Cooked meals', icon: '🍱', iconClass: 'meals', donor: 'Dosa House', source: 'Dosa House', destination: 'Night Shelter C', quantity: 50, unit: 'meals', status: 'action', statusLabel: 'Needs rider', minutes: 12, progress: 0, rider: '2 nearby riders', capacity: '0 / 50', mode: 'Scooter', critical: true, color: 'orange', action: 'Find rider' }
-];
+const $ = (selector, scope = document) => scope.querySelector(selector);
+const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
+const escapeHTML = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+const formatNumber = (value) => new Intl.NumberFormat('en-IN').format(Number(value || 0));
+const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+const roleLabel = { admin: 'Operations admin', donor: 'Donor', rider: 'Volunteer rider', shelter: 'Receiving center' };
 
-let operations = [...initialOperations];
-let activities = [
-  { icon: 'lime', title: '40 meals are moving to Night Shelter A', detail: 'Aarav checked in at Banquet Hall South', time: '2 min ago' },
-  { icon: 'orange', title: 'Reservation needs a check-in', detail: 'Meera has 7 minutes before the claim releases', time: '4 min ago' },
-  { icon: 'blue', title: 'Cold-chain match found', detail: 'City Pharmacy is visible to 3 eligible riders', time: '6 min ago' }
-];
-let activeFilter = 'all';
-let activeView = 'operations';
-let simulationMinutes = 0;
+let appState = null;
+let activePage = 'operations';
+let stream = null;
+let operationsTemplate = '';
 let streamPaused = false;
+let activeFilter = 'all';
 let toastTimer;
-let shelterAClosed = false;
+let currentConfig = null;
 
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
-const escapeHTML = (value) => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+document.addEventListener('DOMContentLoaded', init);
 
-function formatClock() {
-  const baseMinutes = 20 * 60 + 24 + simulationMinutes;
-  const minute = baseMinutes % 60;
-  const hour = Math.floor((baseMinutes / 60) % 24);
-  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+async function init() {
+  operationsTemplate = $('#workspace-root')?.innerHTML || '';
+  await loadConfig();
+  bindStaticAuth();
+  const me = await api('/api/me', { silent: true });
+  if (me?.user) await enterApp(me.user);
+  else showLogin();
 }
 
-function getStatusClass(status) {
-  return ['transit', 'reserving', 'action', 'ready', 'rerouted', 'delivered'].includes(status) ? status : 'ready';
+async function loadConfig() { currentConfig = await api('/api/config', { silent: true }); }
+
+async function api(url, options = {}) {
+  try {
+    const response = await fetch(url, { headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) { if (!options.silent) showToast(payload.error || 'Something went wrong', true); return null; }
+    return payload;
+  } catch (error) { if (!options.silent) showToast('The Sanjeevani server is unavailable', true); return null; }
 }
 
-function filteredOperations() {
-  if (activeFilter === 'critical') return operations.filter((operation) => operation.status !== 'delivered' && (operation.critical || operation.minutes <= 15));
-  if (activeFilter === 'transit') return operations.filter((operation) => operation.status === 'transit' || operation.status === 'rerouted');
-  if (activeFilter === 'action') return operations.filter((operation) => ['action', 'reserving'].includes(operation.status));
-  return operations;
+function bindStaticAuth() {
+  document.addEventListener('click', (event) => {
+    const logout = event.target.closest('[data-logout]');
+    if (logout) logoutUser();
+    if (event.target.closest('#sidebar-add')) openDonationModal();
+    if (event.target.closest('#sidebar-scenario') && appState?.user.role === 'admin') setPage('scenario');
+    if (event.target.closest('#close-modal') || event.target.closest('#cancel-modal')) closeDonationModal();
+    const pageButton = event.target.closest('[data-page]');
+    if (pageButton && appState) setPage(pageButton.dataset.page);
+    const action = event.target.closest('[data-action]');
+    if (action && appState) handleAction(action.dataset.action, action.dataset.id, action.dataset.value);
+  });
+}
+
+function showLogin(errorMessage = '') {
+  $('#app-shell').hidden = true;
+  const auth = $('#auth-screen');
+  auth.className = 'auth-screen';
+  auth.innerHTML = `<div class="auth-layout">
+    <section class="auth-story"><img class="auth-logo" src="sanjeevani-logo.jpeg" alt="Sanjeevani logo" /><div><h1>Good aid should<br /><em>never wait.</em></h1><p>One live network for safe surplus collection, reliable riders, and receiving centers that can adapt when the ground changes.</p><div class="auth-story-footer"><span>Shared live data</span><span>Safety-first dispatch</span></div></div></section>
+    <section class="auth-panel"><div class="section-kicker">Sanjeevani operations network</div><h2>Welcome back</h2><p class="auth-subtitle">Sign in to coordinate what matters, where it matters, before the clock runs out.</p><form class="auth-form" id="login-form"><label class="auth-field"><span>Email address</span><input id="login-email" type="email" autocomplete="username" placeholder="you@example.com" required /></label><label class="auth-field"><span>Password</span><div class="password-row"><input id="login-password" type="password" autocomplete="current-password" placeholder="Enter your password" required /><button class="password-toggle" type="button" id="toggle-password">Show</button></div></label><div class="auth-error" id="login-error">${escapeHTML(errorMessage)}</div><button class="primary-button auth-submit" type="submit" id="login-submit">Sign in to Sanjeevani <span>→</span></button></form><div class="demo-login"><h3>Demo accounts</h3><p>These are real local demo accounts. Use the shared password configured in <code>DEMO_PASSWORD</code> in the server environment. See README for setup.</p><div class="demo-role-grid"><button class="demo-role-button" data-demo-email="admin@demo.sanjeevani.app"><i class="role-dot">⌁</i><span><strong>Administrator</strong><small>Network operations</small></span></button><button class="demo-role-button" data-demo-email="donor@demo.sanjeevani.app"><i class="role-dot">＋</i><span><strong>Donor</strong><small>Post surplus aid</small></span></button><button class="demo-role-button" data-demo-email="rider@demo.sanjeevani.app"><i class="role-dot">◌</i><span><strong>Rider</strong><small>Move and deliver aid</small></span></button><button class="demo-role-button" data-demo-email="shelter@demo.sanjeevani.app"><i class="role-dot">⌂</i><span><strong>Shelter</strong><small>Manage demand</small></span></button></div></div></section>
+  </div>`;
+  $('#login-form').addEventListener('submit', loginUser);
+  $('#toggle-password').addEventListener('click', () => { const input = $('#login-password'); const visible = input.type === 'text'; input.type = visible ? 'password' : 'text'; $('#toggle-password').textContent = visible ? 'Show' : 'Hide'; });
+  $$('.demo-role-button').forEach((button) => button.addEventListener('click', () => { $('#login-email').value = button.dataset.demoEmail; $('#login-password').focus(); }));
+}
+
+async function loginUser(event) {
+  event.preventDefault(); const submit = $('#login-submit'); const error = $('#login-error'); submit.disabled = true; submit.textContent = 'Signing in…'; error.textContent = '';
+  const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: $('#login-email').value, password: $('#login-password').value }), silent: true });
+  submit.disabled = false; submit.innerHTML = 'Sign in to Sanjeevani <span>→</span>';
+  if (!result) { error.textContent = 'Invalid email or password. Check the server DEMO_PASSWORD value.'; return; }
+  await enterApp(result.user);
+}
+
+async function logoutUser() { await api('/api/auth/logout', { method: 'POST', silent: true }); if (stream) stream.close(); appState = null; showLogin(); showToast('Signed out'); }
+
+async function enterApp(user) {
+  const state = await api('/api/state', { silent: true }); if (!state) return showLogin('The server could not load your workspace.');
+  appState = state; appState.user = user || state.user; $('#auth-screen').innerHTML = ''; $('#auth-screen').className = ''; $('#app-shell').hidden = false; configureShell(); connectRealtime(); setPage(defaultPageForRole(appState.user.role));
+}
+
+function defaultPageForRole(role) { return role === 'donor' ? 'donations' : role === 'rider' ? 'dispatch' : role === 'shelter' ? 'shelters' : 'operations'; }
+
+function configureShell() {
+  const role = appState.user.role; const nav = $$('.nav-item'); const names = role === 'admin' ? ['Operations', 'Dispatch queue', 'Shelters', 'Riders', 'Impact'] : role === 'donor' ? ['My dashboard', 'My donations', 'Pickup map', 'Impact', 'Activity'] : role === 'rider' ? ['My deliveries', 'Available work', 'My map', 'History', 'Activity'] : ['Center dashboard', 'Incoming deliveries', 'Demand & capacity', 'Center map', 'Activity'];
+  const pages = role === 'admin' ? ['operations', 'dispatch', 'shelters', 'riders', 'impact'] : role === 'donor' ? ['operations', 'donations', 'map', 'impact', 'activity'] : role === 'rider' ? ['operations', 'dispatch', 'map', 'history', 'activity'] : ['operations', 'dispatch', 'shelters', 'map', 'activity'];
+  nav.forEach((item, index) => { item.dataset.page = pages[index]; const label = item.querySelector('span:nth-child(2)'); if (label) label.textContent = names[index]; item.hidden = false; });
+  $('.sidebar-label-spaced').textContent = role === 'admin' ? 'Quick actions' : 'Workspace actions';
+  const action = $('#sidebar-add'); if (action) { action.hidden = !['admin', 'donor'].includes(role); action.querySelector('span:last-child').textContent = role === 'donor' ? 'Post a donation' : 'Log a donation'; }
+  const scenario = $('#sidebar-scenario'); if (scenario) scenario.hidden = role !== 'admin';
+  const topActions = $('.topbar-actions'); if (topActions && !$('#logout-button')) { const wrapper = document.createElement('div'); wrapper.className = 'session-user'; wrapper.innerHTML = `<span class="role-chip">${escapeHTML(roleLabel[role])}</span><button class="logout-button" id="logout-button" data-logout>Log out</button>`; topActions.appendChild(wrapper); }
+  if (!document.querySelector('.backend-banner')) { const banner = document.createElement('div'); banner.className = 'backend-banner'; banner.innerHTML = `<span>●</span><strong>Local shared demo mode</strong><span>Data is persisted in data/sanjeevani.json and shared through the Sanjeevani server.${currentConfig?.supabaseConfigured ? ' Supabase variables are present; apply the migration and switch the persistence adapter before production use.' : ''}</span><button class="banner-action" data-page="activity">View activity</button>`; $('.main-content').insertBefore(banner, $('.topbar').nextSibling); }
+}
+
+function connectRealtime() {
+  if (stream) stream.close(); stream = new EventSource('/api/events/stream'); stream.onmessage = async (event) => { const payload = JSON.parse(event.data); if (payload.type === 'connected' || streamPaused) return; const next = await api('/api/state', { silent: true }); if (next) { appState = next; renderCurrentPage(); } }; stream.onerror = () => { setTimeout(() => { if (appState) connectRealtime(); }, 2500); };
+}
+
+async function refreshState() { const next = await api('/api/state', { silent: true }); if (next) { appState = next; renderCurrentPage(); } }
+
+function setPage(page) { activePage = page; $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.page === page)); $('#current-view-label').textContent = pageTitle(page); renderCurrentPage(); }
+function pageTitle(page) { return ({ operations: 'Operations', dispatch: 'Dispatch queue', donations: 'My donations', shelters: 'Shelters & demand', riders: 'Riders', impact: 'Impact', map: 'Live map', activity: 'Activity log', history: 'Delivery history' })[page] || 'Workspace'; }
+function renderCurrentPage() { if (!appState) return; const root = $('#workspace-root'); if (activePage === 'operations' && appState.user.role === 'admin') { root.innerHTML = operationsTemplate; bindOperations(); renderOperations(); return; } root.innerHTML = renderRolePage(activePage); bindDynamicPage(); if (activePage === 'map' || activePage === 'operations' || activePage === 'riders') setTimeout(() => renderMap('workspace-map'), 0); }
+
+function operationRows() {
+  return appState.shipments.map((shipment) => { const donation = appState.donations.find((item) => item.id === shipment.donationId) || {}; const rider = appState.riders.find((item) => item.id === shipment.riderId) || {}; const center = appState.centers.find((item) => item.id === shipment.centerId) || {}; return { ...shipment, donation, rider, center, minutes: Math.max(0, Math.round((new Date(shipment.etaAt || appState.metrics.simulationNow) - new Date(appState.metrics.simulationNow)) / 60000)) }; });
 }
 
 function renderOperations() {
-  const list = $('#operation-list');
-  const visible = filteredOperations();
-  $('#all-count').textContent = operations.length;
-  if (!visible.length) {
-    list.innerHTML = '<div class="empty-state">Nothing in this view right now. The network is clear.</div>';
-    return;
+  const rows = operationRows(); const filtered = activeFilter === 'critical' ? rows.filter((row) => ['offered', 'delayed', 'attention'].includes(row.status) || row.minutes <= 15) : activeFilter === 'transit' ? rows.filter((row) => ['in_transit', 'picked_up', 'rerouted'].includes(row.status)) : activeFilter === 'action' ? rows.filter((row) => ['offered', 'delayed', 'attention'].includes(row.status)) : rows;
+  $('#active-shipments').textContent = String(appState.metrics.activeShipments).padStart(2, '0'); $('#attention-count').textContent = String(appState.metrics.needsAttention).padStart(2, '0'); $('#meals-rescued').textContent = formatNumber(appState.metrics.mealsRescued); $('#shelter-demand').innerHTML = `${Math.round(appState.metrics.openDemand / Math.max(1, appState.metrics.openDemand + 120) * 100)}<span class="metric-unit">%</span>`; $('#all-count').textContent = rows.length; $('#critical-count').textContent = rows.filter((row) => ['offered', 'delayed', 'attention'].includes(row.status) || row.minutes <= 15).length; $('#transit-count').textContent = rows.filter((row) => ['in_transit', 'picked_up', 'rerouted'].includes(row.status)).length; $('#action-count').textContent = rows.filter((row) => ['offered', 'delayed', 'attention'].includes(row.status)).length;
+  $('#operation-list').innerHTML = filtered.length ? filtered.map((row) => operationCard(row)).join('') : '<div class="empty-state">No shipments match this filter.</div>'; $('#attention-list').innerHTML = rows.filter((row) => ['offered', 'delayed', 'attention'].includes(row.status)).slice(0, 3).map((row) => `<div class="attention-item"><div class="attention-marker ${row.status === 'offered' ? 'yellow' : ''}">${row.status === 'offered' ? '◷' : '!'}</div><div class="attention-copy"><strong>${escapeHTML(row.donation.donorName)} · ${escapeHTML(row.center.name)}</strong><span>${escapeHTML(row.status === 'offered' ? 'Waiting for rider response' : 'Operator review required')} · ${row.minutes} min remaining</span></div><button class="attention-action" data-action="shipment-ping" data-id="${row.id}">Open</button></div>`).join('') || '<div class="empty-state">All clear for now.</div>';
+  $('#activity-list').innerHTML = appState.events.slice(0, 3).map((event) => `<div class="activity-item"><i class="activity-dot ${event.type.includes('delay') || event.type.includes('expired') ? 'orange' : event.type.includes('shipment') ? 'blue' : ''}"></i><div class="activity-copy"><strong>${escapeHTML(event.message)}</strong><span>${escapeHTML(event.type.replaceAll('.', ' · '))}</span><small class="activity-time">${formatTime(event.createdAt)}</small></div></div>`).join('');
+  bindOperations();
+}
+
+function operationCard(row) { const status = row.status.replaceAll('_', ' '); const statusClass = row.status === 'in_transit' ? 'transit' : ['offered', 'delayed', 'attention'].includes(row.status) ? 'action' : row.status === 'delivered' ? 'delivered' : row.status === 'rerouted' ? 'rerouted' : 'ready'; const action = row.status === 'offered' ? 'Allocate / inspect' : row.status === 'delayed' ? 'Review delay' : row.status === 'delivered' ? 'View receipt' : 'Open shipment'; return `<article class="operation-card"><div class="operation-card-head"><div class="aid-icon ${row.donation.category === 'Medical supplies' ? 'medical' : row.donation.category === 'Ration kits' ? 'ration' : 'meals'}">${row.donation.category === 'Medical supplies' ? '✚' : row.donation.category === 'Ration kits' ? '▦' : '🍱'}</div><div class="operation-name"><strong>${formatNumber(row.quantity)} ${escapeHTML(row.unit)} · ${escapeHTML(row.donation.donorName)}</strong><span>${escapeHTML(row.donation.category)} · ${escapeHTML(row.rider.name || 'Unassigned')}</span></div><span class="status-pill ${statusClass}">${escapeHTML(status)}</span></div><div class="operation-route"><div class="route-point"><i class="route-dot"></i><span>${escapeHTML(row.donation.pickupLocation.name)}</span></div><span class="route-arrow">→</span><div class="route-point"><i class="route-dot"></i><span>${escapeHTML(row.center.name)}</span></div></div><div class="operation-progress ${statusClass === 'action' ? 'orange' : statusClass === 'transit' ? '' : 'blue'}"><span style="width:${row.status === 'delivered' ? 100 : row.status === 'in_transit' ? 72 : row.status === 'picked_up' ? 46 : 14}%"></span></div><div class="operation-meta"><span class="meta-item">◷ <strong>${row.status === 'delivered' ? 'Complete' : `${row.minutes} min left`}</strong></span><span class="meta-item">♙ <strong>${escapeHTML(row.rider.name || 'Open pool')}</strong></span><span class="meta-item">▣ <strong>${formatNumber(row.quantity)} / ${formatNumber(row.donation.originalQuantity)}</strong></span><span class="meta-spacer"></span><button class="operation-action" data-action="shipment-open" data-id="${row.id}">${action} <span>→</span></button></div></article>`; }
+
+function bindOperations() {
+  $$('.filter-chip').forEach((chip) => chip.addEventListener('click', () => { activeFilter = chip.dataset.filter; $$('.filter-chip').forEach((item) => item.classList.toggle('active', item === chip)); renderOperations(); })); $('#advance-time')?.addEventListener('click', () => handleScenario('advance-time')); $('#filter-button')?.addEventListener('click', () => $('#filter-row')?.classList.toggle('expanded')); $('#clear-attention')?.addEventListener('click', () => showToast('Attention queue is backed by live shipment state')); $('#pause-stream')?.addEventListener('click', (event) => { streamPaused = !streamPaused; event.currentTarget.textContent = streamPaused ? 'Resume stream' : 'Pause stream'; }); $('#view-all')?.addEventListener('click', () => { activeFilter = 'all'; renderOperations(); }); $('#add-batch')?.addEventListener('click', openDonationModal); $('#sidebar-add')?.addEventListener('click', openDonationModal); $('#sidebar-scenario')?.addEventListener('click', () => setPage('scenario')); $$('.scenario-actions button').forEach((button) => button.addEventListener('click', () => handleScenario(button.dataset.scenario))); $('#batch-form')?.addEventListener('submit', submitDonation);
+}
+
+function renderRolePage(page) {
+  const role = appState.user.role; const metrics = appState.metrics; const rows = operationRows();
+  if (page === 'donations' || (role === 'donor' && page === 'operations')) return `<div class="page-toolbar"><div><div class="section-kicker">Donor workspace</div><h2>Your donation flow</h2><p>Post surplus, see collection progress, and keep every handoff accountable.</p></div><div class="toolbar-actions"><button class="small-button primary" data-action="open-donation">＋ Post a donation</button></div></div><div class="stat-grid"><div class="stat-tile"><span>My donations</span><strong>${appState.donations.length}</strong></div><div class="stat-tile"><span>Available units</span><strong>${formatNumber(appState.donations.reduce((sum, item) => sum + item.availableQuantity, 0))}</strong></div><div class="stat-tile"><span>Collected</span><strong>${formatNumber(appState.donations.reduce((sum, item) => sum + item.pickedUpQuantity, 0))}</strong></div><div class="stat-tile"><span>Delivered</span><strong>${formatNumber(appState.donations.reduce((sum, item) => sum + item.deliveredQuantity, 0))}</strong></div></div>${donationsTable(appState.donations, true)}`;
+  if (page === 'dispatch' || page === 'history') {
+    if (role === 'admin') return adminDispatchView(rows);
+    return `<div class="page-toolbar"><div><div class="section-kicker">${role === 'rider' ? 'Rider dispatch' : 'Incoming delivery queue'}</div><h2>${role === 'rider' ? 'Move what matters' : 'Know what is arriving'}</h2><p>${role === 'rider' ? 'Accept, collect, move, and complete your assigned shipments.' : 'Confirm received quantities and update demand when the ground changes.'}</p></div></div>${role === 'rider' ? riderDispatch(rows) : shelterDispatch(rows)}`;
   }
-  list.innerHTML = visible.map((operation) => {
-    const statusClass = getStatusClass(operation.status);
-    const destination = shelterAClosed && operation.destination === 'Night Shelter A' ? 'Night Shelter A · closed' : operation.destination;
-    const actionLabel = operation.action || (operation.status === 'delivered' ? 'View receipt' : 'Open');
-    return `<article class="operation-card" data-operation="${escapeHTML(operation.id)}">
-      <div class="operation-card-head">
-        <div class="aid-icon ${escapeHTML(operation.iconClass)}">${operation.icon}</div>
-        <div class="operation-name"><strong>${escapeHTML(operation.quantity)} ${escapeHTML(operation.unit)} · ${escapeHTML(operation.donor)}</strong><span>${escapeHTML(operation.type)} · ${escapeHTML(operation.mode)}</span></div>
-        <span class="status-pill ${statusClass}">${escapeHTML(operation.statusLabel)}</span>
-      </div>
-      <div class="operation-route"><div class="route-point"><i class="route-dot"></i><span>${escapeHTML(operation.source)}</span></div><span class="route-arrow">→</span><div class="route-point"><i class="route-dot"></i><span>${escapeHTML(destination)}</span></div></div>
-      <div class="operation-progress ${escapeHTML(operation.color || 'lime')}"><span style="width:${Math.min(100, operation.progress)}%"></span></div>
-      <div class="operation-meta"><span class="meta-item">◷ <strong>${operation.status === 'delivered' ? 'Complete' : `${Math.max(0, operation.minutes)} min left`}</strong></span><span class="meta-item">♙ <strong>${escapeHTML(operation.rider)}</strong></span><span class="meta-item">▣ <strong>${escapeHTML(operation.capacity)}</strong></span><span class="meta-spacer"></span><button class="operation-action" data-operation-action="${escapeHTML(operation.id)}">${escapeHTML(actionLabel)} <span>→</span></button></div>
-    </article>`;
-  }).join('');
+  if (page === 'shelters') return sheltersView();
+  if (page === 'riders') return ridersView();
+  if (page === 'impact') return impactView();
+  if (page === 'activity') return activityView();
+  if (page === 'scenario') return scenarioView();
+  if (page === 'map') return mapView();
+  return role === 'rider' ? riderDispatch(rows) : role === 'shelter' ? sheltersView() : role === 'donor' ? renderRolePage('donations') : operationsTemplate;
 }
 
-function renderAttention() {
-  const attention = operations.filter((operation) => operation.critical || operation.status === 'reserving').slice(0, 3);
-  const list = $('#attention-list');
-  if (!attention.length) {
-    list.innerHTML = '<div class="empty-state">All clear for now.</div>';
-    return;
-  }
-  list.innerHTML = attention.map((operation, index) => {
-    const marker = operation.status === 'reserving' ? '◷' : '!';
-    const copy = operation.status === 'reserving' ? `${operation.rider} has not checked in yet` : `${operation.quantity} ${operation.unit} still need a rider`;
-    const action = operation.status === 'reserving' ? 'Ping' : 'Match';
-    return `<div class="attention-item"><div class="attention-marker ${index === 1 ? 'yellow' : ''}">${marker}</div><div class="attention-copy"><strong>${escapeHTML(operation.donor)} · ${escapeHTML(operation.destination)}</strong><span>${escapeHTML(copy)} · ${Math.max(0, operation.minutes)} min remaining</span></div><button class="attention-action" data-attention-action="${escapeHTML(operation.id)}">${action}</button></div>`;
-  }).join('');
+function adminDispatchView(rows) { return `<div class="page-toolbar"><div><div class="section-kicker">Administrator allocation queue</div><h2>Allocate only what is safe</h2><p>Recommendations are constrained by capacity, center demand, dependencies, and remaining shelf-life.</p></div><button class="small-button secondary" data-action="refresh">Refresh state</button></div><div class="notice-card"><span class="notice-icon">✦</span><span>Manual allocation is role-protected on the server. Every offer creates a short reservation lease and is released exactly once if the rider does not respond.</span></div>${donationsTable(appState.donations)}<div class="panel-card" style="margin-top:16px;padding:20px"><div class="panel-heading compact"><div><div class="section-kicker">Live shipments</div><h2>Current allocation state</h2></div></div>${rows.length ? `<div class="data-table-card" style="margin-top:13px"><table class="data-table"><thead><tr><th>Shipment</th><th>Rider</th><th>Center</th><th>Status</th><th>ETA</th></tr></thead><tbody>${rows.map((row) => `<tr><td><strong>${formatNumber(row.quantity)} ${escapeHTML(row.unit)}</strong><br /><span>${escapeHTML(row.donation.donorName)}</span></td><td>${escapeHTML(row.rider.name || 'Open')}</td><td>${escapeHTML(row.center.name || '—')}</td><td><span class="status-text ${row.status === 'delivered' ? 'good' : row.status === 'offered' ? 'warn' : 'info'}">${escapeHTML(row.status.replaceAll('_', ' '))}</span></td><td>${formatTime(row.etaAt)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-panel" style="margin-top:13px">No shipments yet.</div>'}</div>`; }
+
+function donationsTable(donations, mine = false) { if (!donations.length) return '<div class="empty-panel"><strong>No donations yet</strong>Post your first surplus batch and it will appear here for the network.</div>'; return `<div class="data-table-card panel-card"><table class="data-table"><thead><tr><th>Donation</th><th>Quantity</th><th>Safe until</th><th>Available</th><th>Status</th><th></th></tr></thead><tbody>${donations.map((donation) => `<tr><td><strong>${escapeHTML(donation.title)}</strong><br /><span>${escapeHTML(donation.category)} · ${escapeHTML(donation.pickupLocation.name)}</span></td><td>${formatNumber(donation.originalQuantity)} ${escapeHTML(donation.unit)}</td><td>${formatTime(donation.safeUntil)}</td><td>${formatNumber(donation.availableQuantity)}</td><td><span class="status-text ${donation.availableQuantity ? 'good' : 'info'}">${escapeHTML(donation.status.replaceAll('_', ' '))}</span></td><td><div class="table-actions"><button class="table-action" data-action="donation-open" data-id="${donation.id}">Details</button>${appState.user.role === 'admin' && donation.availableQuantity > 0 ? `<button class="table-action" data-action="auto-match" data-id="${donation.id}">Auto-match</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div>`; }
+function riderDispatch(rows) { const riderRows = rows.filter((row) => appState.user.role === 'rider' ? true : row.rider.id === appState.user.entityId); if (!riderRows.length) return '<div class="empty-panel"><strong>No active assignments</strong>New safe offers will appear here in real time.</div>'; return `<div class="data-table-card panel-card"><table class="data-table"><thead><tr><th>Shipment</th><th>Route</th><th>State</th><th>Deadline</th><th>Action</th></tr></thead><tbody>${riderRows.map((row) => `<tr><td><strong>${formatNumber(row.quantity)} ${escapeHTML(row.unit)}</strong><br /><span>${escapeHTML(row.donation.category)} · ${escapeHTML(row.donation.donorName)}</span></td><td>${escapeHTML(row.donation.pickupLocation.name)} → ${escapeHTML(row.center.name)}</td><td><span class="status-text ${row.status === 'offered' ? 'warn' : row.status === 'delivered' ? 'good' : 'info'}">${escapeHTML(row.status.replaceAll('_', ' '))}</span></td><td>${row.minutes} min</td><td><div class="table-actions">${riderActionButtons(row)}</div></td></tr>`).join('')}</tbody></table></div>`; }
+function shelterDispatch(rows) { const incoming = rows.filter((row) => row.center.id === appState.user.entityId); return incoming.length ? `<div class="data-table-card panel-card"><table class="data-table"><thead><tr><th>Shipment</th><th>Rider</th><th>ETA</th><th>State</th><th>Action</th></tr></thead><tbody>${incoming.map((row) => `<tr><td><strong>${formatNumber(row.quantity)} ${escapeHTML(row.unit)}</strong><br /><span>${escapeHTML(row.donation.category)} · ${escapeHTML(row.donation.donorName)}</span></td><td>${escapeHTML(row.rider.name)}</td><td>${formatTime(row.etaAt)}</td><td><span class="status-text ${row.status === 'delivered' ? 'good' : 'info'}">${escapeHTML(row.status.replaceAll('_', ' '))}</span></td><td>${row.status !== 'delivered' ? `<button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="delivered">Confirm receipt</button>` : '<span class="status-text good">Received</span>'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-panel"><strong>No incoming shipments</strong>When a safe allocation is made to your center, it will appear here.</div>'; }
+function riderActionButtons(row) { if (row.status === 'offered') return `<button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="accept">Accept</button><button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="reject">Reject</button>`; if (row.status === 'reserved') return `<button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="pickup-arrived">Arrived</button>`; if (row.status === 'pickup_confirmed') return `<button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="picked-up">Picked up</button>`; if (row.status === 'picked_up') return `<button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="in-transit">Start trip</button>`; if (['in_transit', 'delayed'].includes(row.status)) return `<button class="table-action" data-action="shipment-action" data-id="${row.id}" data-value="report-delay">Report delay</button>`; return '<span class="status-text good">Complete</span>'; }
+
+function sheltersView() { const centers = appState.centers; return `<div class="page-toolbar"><div><div class="section-kicker">Receiving network</div><h2>Centers and demand</h2><p>Keep capacity, dependencies, and receiving status truthful.</p></div></div><div class="detail-grid">${centers.map((center) => `<article class="detail-card"><div class="panel-heading compact"><div><div class="section-kicker">${escapeHTML(center.type)}</div><h3>${escapeHTML(center.name)}</h3></div><span class="status-pill ${center.isOpen ? 'ready' : 'action'}">${center.isOpen ? 'Open' : 'Closed'}</span></div><div class="detail-row"><span>Capacity</span><strong>${center.occupancy} / ${center.capacity}</strong></div><div class="detail-row"><span>Water / fuel</span><strong>${center.water ? 'Water ready' : 'No water'} · ${center.fuel ? 'Fuel ready' : 'No fuel'}</strong></div><div class="detail-row"><span>Receiving hours</span><strong>${escapeHTML(center.receivingHours)}</strong></div><div class="action-stack"><button class="small-button secondary" data-action="center-toggle" data-id="${center.id}" data-value="${center.isOpen ? 'close' : 'open'}">${center.isOpen ? 'Close center' : 'Reopen center'}</button>${appState.user.role === 'shelter' || appState.user.role === 'admin' ? `<button class="small-button primary" data-action="center-demand" data-id="${center.id}">Update demand</button>` : ''}</div></article>`).join('')}</div><div class="panel-card" style="margin-top:16px;padding:20px"><div class="panel-heading compact"><div><div class="section-kicker">Demand lines</div><h2>Open need by item type</h2></div></div>${demandsTable(appState.demands)}</div>`; }
+function demandsTable(demands) { return `<div class="data-table-card" style="margin-top:13px"><table class="data-table"><thead><tr><th>Center</th><th>Category</th><th>Need</th><th>Priority</th><th>Last updated</th></tr></thead><tbody>${demands.map((demand) => `<tr><td>${escapeHTML(appState.centers.find((center) => center.id === demand.centerId)?.name || '—')}</td><td><strong>${escapeHTML(demand.category)}</strong></td><td>${formatNumber(demand.quantity)} ${escapeHTML(demand.unit)}</td><td><span class="status-text ${demand.priority === 'urgent' ? 'warn' : 'info'}">${escapeHTML(demand.priority)}</span></td><td>${formatTime(demand.updatedAt)}</td></tr>`).join('')}</tbody></table></div>`; }
+function ridersView() { return `<div class="page-toolbar"><div><div class="section-kicker">Volunteer network</div><h2>Riders and live availability</h2><p>Use capacity and last-seen data to make safe dispatch decisions.</p></div></div><div class="data-table-card panel-card"><table class="data-table"><thead><tr><th>Rider</th><th>Vehicle</th><th>Capacity</th><th>Availability</th><th>Reliability</th><th>Last seen</th></tr></thead><tbody>${appState.riders.map((rider) => `<tr><td><strong>${escapeHTML(rider.name)}</strong><br /><span>${escapeHTML(rider.phone)}</span></td><td>${escapeHTML(rider.vehicle)}</td><td>${rider.capacity - rider.capacityReserved} / ${rider.capacity}</td><td><span class="status-text ${rider.availability === 'available' ? 'good' : 'info'}">${escapeHTML(rider.availability.replaceAll('_', ' '))}</span></td><td>${Math.round(rider.reliability * 100)}%</td><td>${formatTime(rider.lastSeenAt)}</td></tr>`).join('')}</tbody></table></div>`; }
+function impactView() { const m = appState.metrics; return `<div class="page-toolbar"><div><div class="section-kicker">Measured from live records</div><h2>Impact, not vanity numbers</h2><p>Every metric below is calculated from the current database-backed state.</p></div></div><div class="stat-grid"><div class="stat-tile"><span>Active shipments</span><strong>${m.activeShipments}</strong></div><div class="stat-tile"><span>Units rescued</span><strong>${formatNumber(m.unitsDelivered)}</strong></div><div class="stat-tile"><span>On-time delivery</span><strong>${m.onTimeRate}%</strong></div><div class="stat-tile"><span>Units wasted</span><strong>${formatNumber(m.unitsWasted)}</strong></div></div><div class="detail-grid"><article class="detail-card"><h3>Network health</h3><div class="detail-row"><span>Open demand</span><strong>${formatNumber(m.openDemand)} units</strong></div><div class="detail-row"><span>Available inventory</span><strong>${formatNumber(m.availableUnits)} units</strong></div><div class="detail-row"><span>Donations logged</span><strong>${m.totalDonations}</strong></div><div class="detail-row"><span>Attention queue</span><strong>${m.needsAttention}</strong></div></article><article class="detail-card"><h3>How to read this</h3><p style="color:#87938a;font-size:11px;line-height:1.6;margin:0">Seeded historical records are marked in the database with <strong>seeded: true</strong>. New records created from any signed-in role are stored in the same shared server data file and are broadcast to connected sessions.</p></article></div>`; }
+function activityView() { return `<div class="page-toolbar"><div><div class="section-kicker">Auditable coordination</div><h2>Activity and audit log</h2><p>Important allocations, state changes, releases, and delivery confirmations are recorded.</p></div></div><div class="log-list">${appState.events.map((event) => `<div class="log-item"><div class="log-icon">✦</div><div class="log-copy"><strong>${escapeHTML(event.message)}</strong><span>${escapeHTML(event.type)} · actor ${escapeHTML(event.actorId || 'system')}</span><time>${new Date(event.createdAt).toLocaleString()}</time></div></div>`).join('')}</div>`; }
+function scenarioView() { return `<div class="page-toolbar"><div><div class="section-kicker">Administrator tools</div><h2>Scenario Lab</h2><p>Run deterministic, database-backed failure cases for the hackathon demo.</p></div><button class="small-button danger" data-action="scenario" data-value="reset">Reset demo data</button></div><div class="notice-card"><span class="notice-icon">◈</span><span>Every control below changes the shared server state, activity log, dispatch board, and metrics. Open another browser to observe the update in real time.</span></div><div class="sim-lab">${[['urgent','Create urgent donation','Create a 180-meal batch with a 35-minute safe-use deadline.'],['split','Split a large batch','Allocate the urgent batch across multiple riders and eligible centers.'],['no-show','Simulate rider no-show','Expire an offered reservation and return its quantity to the open pool.'],['advance-time','Advance simulation clock','Move the server simulation clock forward by ten minutes.'],['closure','Close Shelter A mid-route','Close a destination and reassess unpicked or in-transit shipments.'],['demand-reduction','Reduce shelter demand','Reduce current demand and release affected unpicked work.'],['delay','Simulate route delay','Add a delay to an active shipment and update its ETA.'],['movement','Simulate rider movement','Move a demo rider on the Leaflet map.']].map(([key,title,description]) => `<div class="scenario-control"><div><strong>${title}</strong><span>${description}</span></div><button class="small-button primary" data-action="scenario" data-value="${key}">Run</button></div>`).join('')}</div>`; }
+function mapView() { return `<div class="page-toolbar"><div><div class="section-kicker">Simulated Pune / Alandi network</div><h2>Live operations map</h2><p>Seeded coordinates are fictional demo data. Simulated movement is explicitly labelled.</p></div><div class="toolbar-actions"><button class="small-button secondary" data-action="scenario" data-value="movement">Simulate rider movement</button></div></div><div class="map-card"><div class="map-container" id="workspace-map"></div><div class="map-legend"><span class="legend-item"><i class="legend-dot green"></i>Open center</span><span class="legend-item"><i class="legend-dot orange"></i>Attention</span><span class="legend-item"><i class="legend-dot blue"></i>Active rider</span><span>Demo coordinates · OSM attribution</span></div></div>`; }
+
+function renderMap(containerId) { const container = document.getElementById(containerId); if (!container) return; if (!window.L) { container.innerHTML = '<div class="map-fallback">Leaflet could not load. The rest of the workspace remains available; check network access for the OpenStreetMap map tiles.</div>'; return; } const map = L.map(container).setView([18.588, 73.899], 13); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); const bounds = []; appState.centers.forEach((center) => { const marker = L.circleMarker([center.lat, center.lng], { radius: 8, color: center.isOpen ? '#5c9d50' : '#b8684f', fillColor: center.isOpen ? '#90c96b' : '#e58f72', fillOpacity: .9 }).addTo(map); marker.bindPopup(`<strong>${escapeHTML(center.name)}</strong><br />${center.isOpen ? 'Open' : 'Closed'} · ${center.occupancy}/${center.capacity} occupied`); bounds.push([center.lat, center.lng]); }); appState.riders.forEach((rider) => { const marker = L.circleMarker([rider.lat, rider.lng], { radius: 6, color: '#4c8f96', fillColor: '#85c1c2', fillOpacity: .95 }).addTo(map); marker.bindPopup(`<strong>${escapeHTML(rider.name)}</strong><br />${escapeHTML(rider.availability)} · ${escapeHTML(rider.vehicle)}<br /><em>Simulated demo location</em>`); bounds.push([rider.lat, rider.lng]); }); appState.donations.forEach((donation) => { const marker = L.marker([donation.pickupLocation.lat, donation.pickupLocation.lng]).addTo(map); marker.bindPopup(`<strong>${escapeHTML(donation.title)}</strong><br />${formatNumber(donation.availableQuantity)} available · safe until ${formatTime(donation.safeUntil)}`); bounds.push([donation.pickupLocation.lat, donation.pickupLocation.lng]); }); if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); }
+
+function bindDynamicPage() { $$('.data-action').forEach((item) => item.addEventListener('click', () => handleAction(item.dataset.action, item.dataset.id, item.dataset.value))); if (activePage === 'donations') $('#add-batch')?.addEventListener('click', openDonationModal); }
+
+async function handleAction(action, entityId, value) {
+  if (action === 'refresh') return refreshState();
+  if (action === 'auto-match') { const result = await api('/api/admin/allocate-best', { method: 'POST', body: JSON.stringify({ donationId: entityId }) }); if (result) { appState = result.state; renderCurrentPage(); showToast(result.message || `Created ${result.created.length} safe offer(s)`); } return; }
+  if (action === 'open-donation') return openDonationModal();
+  if (action === 'scenario') return handleScenario(value);
+  if (action === 'shipment-action') { const payload = value === 'report-delay' ? { delayMinutes: 15 } : {}; const result = await api(`/api/shipments/${entityId}/${value}`, { method: 'POST', body: JSON.stringify(payload) }); if (result) { appState = result.state; renderCurrentPage(); showToast(`Shipment ${value.replaceAll('-', ' ')} updated`); } return; }
+  if (action === 'center-toggle') { const result = await api(`/api/centers/${entityId}/status`, { method: 'POST', body: JSON.stringify({ isOpen: value === 'open' }) }); if (result) { appState = result.state; renderCurrentPage(); showToast(`Receiving center ${value === 'open' ? 'reopened' : 'closed'}`); } return; }
+  if (action === 'center-demand') { const demand = appState.demands.find((item) => item.centerId === entityId); const next = window.prompt(`Update ${demand?.category || 'demand'} quantity`, String(demand?.quantity ?? 0)); if (next === null) return; const result = await api(`/api/centers/${entityId}/demand`, { method: 'POST', body: JSON.stringify({ demandId: demand.id, quantity: Number(next) }) }); if (result) { appState = result.state; renderCurrentPage(); showToast('Demand updated and affected allocations reassessed'); } return; }
+  if (action === 'shipment-open' || action === 'shipment-ping') { setPage(appState.user.role === 'admin' ? 'dispatch' : 'dispatch'); showToast('Shipment details are available in the dispatch queue'); return; }
+  if (action === 'donation-open') return showToast('Donation details are visible in the dispatch queue and audit log');
 }
 
-function renderActivity() {
-  const list = $('#activity-list');
-  list.innerHTML = activities.slice(0, 3).map((activity) => `<div class="activity-item"><i class="activity-dot ${escapeHTML(activity.icon)}"></i><div class="activity-copy"><strong>${escapeHTML(activity.title)}</strong><span>${escapeHTML(activity.detail)}</span><small class="activity-time">${escapeHTML(activity.time)}</small></div></div>`).join('');
-}
+async function handleScenario(scenario) { const result = await api('/api/admin/scenario', { method: 'POST', body: JSON.stringify({ scenario }) }); if (result) { appState = result.state || appState; renderCurrentPage(); showToast(result.message || 'Scenario completed'); } }
 
-function updateMetrics() {
-  const active = operations.filter((operation) => !['delivered', 'expired'].includes(operation.status)).length;
-  const attention = operations.filter((operation) => operation.critical || operation.status === 'reserving').length;
-  const servings = operations.filter((operation) => operation.status !== 'delivered').reduce((sum, operation) => sum + operation.quantity, 0);
-  $('#active-shipments').textContent = String(active).padStart(2, '0');
-  $('#attention-count').textContent = String(attention).padStart(2, '0');
-  $('#critical-count').textContent = operations.filter((operation) => operation.status !== 'delivered' && (operation.critical || operation.minutes <= 15)).length;
-  $('#transit-count').textContent = operations.filter((operation) => operation.status === 'transit' || operation.status === 'rerouted').length;
-  $('#action-count').textContent = operations.filter((operation) => ['action', 'reserving'].includes(operation.status)).length;
-  $('#shelter-demand').innerHTML = `${Math.max(41, 76 - Math.floor(simulationMinutes / 20))}<span class="metric-unit">%</span>`;
-  if (servings > 0) $('#all-count').textContent = operations.length;
-}
+function openDonationModal() { const existing = $('#batch-modal'); if (!existing) return showToast('Donation form unavailable on this page', true); existing.classList.add('open'); existing.setAttribute('aria-hidden', 'false'); $('#batch-type')?.focus(); }
+async function submitDonation(event) { event.preventDefault(); const result = await api('/api/donations', { method: 'POST', body: JSON.stringify({ title: $('#batch-title')?.value || `${$('#batch-type').value} donation`, category: $('#batch-type').value, quantity: Number($('#batch-quantity').value), unit: $('#batch-unit')?.value || ($('#batch-type').value === 'Cooked meals' ? 'meals' : 'units'), safeMinutes: Number($('#batch-expiry').value), pickupName: $('#batch-donor').value, pickupAddress: $('#batch-address')?.value || 'Pune / Alandi demo location', pickupWindow: $('#batch-window').value, storage: $('#batch-storage')?.value || 'Standard', handling: $('#batch-handling').value, notes: $('#batch-notes')?.value || '' }) }); if (result) { closeDonationModal(); appState = result.state; renderCurrentPage(); showToast('Donation saved to the shared dispatch network'); } }
+function closeDonationModal() { $('#batch-modal')?.classList.remove('open'); $('#batch-modal')?.setAttribute('aria-hidden', 'true'); }
 
-function renderAll() {
-  $('#clock-time').textContent = formatClock();
-  renderOperations();
-  renderAttention();
-  renderActivity();
-  updateMetrics();
-}
+window.addEventListener('click', (event) => { if (event.target.id === 'batch-modal') closeDonationModal(); });
+window.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeDonationModal(); });
 
-function addActivity(icon, title, detail, time = 'just now') {
-  activities.unshift({ icon, title, detail, time });
-  if (!streamPaused) renderActivity();
-}
-
-function showToast(message) {
-  const toast = $('#toast');
-  $('#toast-message').textContent = message;
-  toast.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
-}
-
-function openModal() {
-  $('#batch-modal').classList.add('open');
-  $('#batch-modal').setAttribute('aria-hidden', 'false');
-  $('#batch-type').focus();
-}
-
-function closeModal() {
-  $('#batch-modal').classList.remove('open');
-  $('#batch-modal').setAttribute('aria-hidden', 'true');
-}
-
-function advanceTime(minutes = 10) {
-  simulationMinutes += minutes;
-  operations.forEach((operation) => {
-    if (operation.status === 'delivered' || operation.status === 'expired') return;
-    operation.minutes -= minutes;
-    if (operation.status === 'reserving' && operation.minutes <= 0) {
-      operation.status = 'action';
-      operation.statusLabel = 'Reservation released';
-      operation.rider = 'Open allocation';
-      operation.action = 'Find rider';
-      operation.critical = true;
-      operation.reservation = false;
-      operation.progress = 0;
-      addActivity('orange', 'A reservation was released automatically', `${operation.quantity} ${operation.unit} returned to the open pool`);
-    } else if ((operation.status === 'transit' || operation.status === 'rerouted') && operation.minutes <= 0) {
-      operation.status = 'delivered';
-      operation.statusLabel = 'Delivered';
-      operation.progress = 100;
-      addActivity('lime', `${operation.quantity} ${operation.unit} delivered safely`, `${operation.rider} completed the handoff to ${operation.destination}`);
-    } else if (operation.status === 'transit' || operation.status === 'rerouted') {
-      operation.progress = Math.min(96, operation.progress + 7);
-    }
-  });
-  renderAll();
-  showToast(`Simulation moved forward ${minutes} minutes`);
-}
-
-function runScenario(scenario) {
-  if (scenario === 'no-show') {
-    const reservation = operations.find((operation) => operation.status === 'reserving');
-    if (!reservation) return showToast('No active reservation to release');
-    reservation.status = 'action';
-    reservation.statusLabel = 'Reservation released';
-    reservation.rider = 'Open allocation';
-    reservation.action = 'Find rider';
-    reservation.reservation = false;
-    reservation.critical = true;
-    reservation.progress = 0;
-    addActivity('orange', 'Ghost reservation detected and released', `${reservation.quantity} meals are visible to the network again`);
-    renderAll();
-    return showToast('Reservation released — the network is recovering');
-  }
-  if (scenario === 'closure') {
-    shelterAClosed = true;
-    const shipment = operations.find((operation) => operation.destination === 'Night Shelter A' && ['transit', 'rerouted'].includes(operation.status));
-    if (shipment) {
-      shipment.destination = 'Community Kitchen Hub';
-      shipment.status = 'rerouted';
-      shipment.statusLabel = 'Rerouted safely';
-      shipment.action = 'View reroute';
-      shipment.progress = Math.max(38, shipment.progress - 10);
-      shipment.color = 'blue';
-      addActivity('blue', 'Shelter A closed — shipment rerouted', `${shipment.quantity} ${shipment.unit} redirected to Community Kitchen Hub`);
-    }
-    renderAll();
-    return showToast('Destination closed; an eligible fallback was found');
-  }
-  if (scenario === 'split') {
-    const splitSource = 'Banquet Hall South';
-    const parts = [40, 40, 40, 40, 20];
-    parts.forEach((quantity, index) => operations.push({ id: `split-${Date.now()}-${index}`, type: 'Cooked meals', icon: '🍱', iconClass: 'meals', donor: splitSource, source: splitSource, destination: index < 3 ? 'Shelter A' : 'Night Shelter C', quantity, unit: 'meals', status: index < 2 ? 'reserving' : 'ready', statusLabel: index < 2 ? 'Reservation at risk' : 'Ready to match', minutes: 75, progress: index < 2 ? 12 : 0, rider: index < 2 ? `Rider ${index + 1} pending` : 'Open allocation', capacity: `0 / ${quantity}`, mode: 'Scooter', critical: index < 2, color: index < 2 ? 'orange' : 'lime', action: index < 2 ? 'Ping rider' : 'Find rider' }));
-    addActivity('lime', '180-meal batch split into five safe loads', '5 riders can now move the supply without overloading a single scooter');
-    renderAll();
-    return showToast('Batch split into five rider-sized allocations');
-  }
-}
-
-function handleOperationAction(id) {
-  const operation = operations.find((item) => item.id === id);
-  if (!operation) return;
-  if (operation.status === 'action' || operation.status === 'ready') {
-    operation.status = 'reserving';
-    operation.statusLabel = 'Reservation at risk';
-    operation.rider = operation.rider === 'Open allocation' ? 'Auto-matching nearby rider' : operation.rider;
-    operation.action = 'Ping rider';
-    operation.reservation = true;
-    operation.critical = true;
-    operation.progress = 18;
-    addActivity('lime', `Match started for ${operation.quantity} ${operation.unit}`, `${operation.rider} has a temporary reservation`);
-    renderAll();
-    return showToast('A short-lived reservation has been created');
-  }
-  if (operation.status === 'reserving') {
-    addActivity('orange', `Check-in requested from ${operation.rider}`, `${operation.donor} will stay open while the rider responds`);
-    renderActivity();
-    return showToast('Check-in ping sent to the rider');
-  }
-  if (operation.status === 'transit') {
-    operation.status = 'rerouted';
-    operation.statusLabel = 'Rerouted safely';
-    operation.destination = 'Community Kitchen Hub';
-    operation.action = 'View reroute';
-    operation.color = 'blue';
-    addActivity('blue', `${operation.quantity} ${operation.unit} rerouted`, `New destination: Community Kitchen Hub`);
-    renderAll();
-    return showToast('Eligible fallback destination selected');
-  }
-  showToast('Receipt is available in the shipment record');
-}
-
-function setView(view) {
-  activeView = view;
-  const labels = { operations: 'Operations', dispatch: 'Dispatch queue', shelters: 'Shelters', riders: 'Riders', impact: 'Impact' };
-  $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === view));
-  $('#current-view-label').textContent = labels[view] || 'Operations';
-  if (view !== 'operations') showToast(`${labels[view]} workspace selected`);
-}
-
-$('#add-batch').addEventListener('click', openModal);
-$('#sidebar-add').addEventListener('click', openModal);
-$('#close-modal').addEventListener('click', closeModal);
-$('#cancel-modal').addEventListener('click', closeModal);
-$('#batch-modal').addEventListener('click', (event) => { if (event.target === $('#batch-modal')) closeModal(); });
-$('#advance-time').addEventListener('click', () => advanceTime(10));
-$('#sidebar-scenario').addEventListener('click', () => { $('#scenario-card').scrollIntoView({ behavior: 'smooth', block: 'center' }); showToast('Scenario lab ready'); });
-$('#filter-button').addEventListener('click', () => $('#filter-row').classList.toggle('expanded'));
-$('#view-all').addEventListener('click', () => { activeFilter = 'all'; $$('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all')); renderOperations(); showToast(`${operations.length} dispatches shown`); });
-$('#clear-attention').addEventListener('click', () => { operations.forEach((operation) => { if (operation.status === 'reserving') operation.critical = false; }); renderAll(); showToast('Attention list cleared for this view'); });
-$('#pause-stream').addEventListener('click', (event) => { streamPaused = !streamPaused; event.currentTarget.textContent = streamPaused ? 'Resume stream' : 'Pause stream'; showToast(streamPaused ? 'Activity stream paused' : 'Activity stream resumed'); });
-
-$$('.filter-chip').forEach((chip) => chip.addEventListener('click', () => { activeFilter = chip.dataset.filter; $$('.filter-chip').forEach((item) => item.classList.toggle('active', item === chip)); renderOperations(); }));
-$$('.nav-item').forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
-$$('.scenario-actions button').forEach((button) => button.addEventListener('click', () => runScenario(button.dataset.scenario)));
-
-$('#operation-list').addEventListener('click', (event) => { const button = event.target.closest('[data-operation-action]'); if (button) handleOperationAction(button.dataset.operationAction); });
-$('#attention-list').addEventListener('click', (event) => { const button = event.target.closest('[data-attention-action]'); if (button) handleOperationAction(button.dataset.attentionAction); });
-
-$('#batch-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  const type = $('#batch-type').value;
-  const quantity = Number($('#batch-quantity').value);
-  const minutes = Number($('#batch-expiry').value);
-  const donor = $('#batch-donor').value.trim();
-  const handling = $('#batch-handling').value;
-  const isDependencySensitive = handling.includes('water') || handling.includes('fuel');
-  const icons = { 'Cooked meals': ['🍱', 'meals', 'meals'], 'Medical supplies': ['✚', 'medical', 'cold-chain kits'], 'Ration kits': ['▦', 'ration', 'kits'], 'Infant formula': ['◒', 'medical', 'formula packs'] };
-  const [icon, iconClass, unit] = icons[type] || ['▦', 'ration', 'units'];
-  const operation = { id: `new-${Date.now()}`, type, icon, iconClass, donor, source: donor, destination: isDependencySensitive ? 'Compatibility check' : 'Best-fit shelter', quantity, unit, status: isDependencySensitive ? 'action' : 'ready', statusLabel: isDependencySensitive ? 'Dependency check' : 'Ready to match', minutes, progress: 0, rider: isDependencySensitive ? handling.replace('Needs ', '') : 'Open allocation', capacity: `0 / ${quantity}`, mode: handling.includes('cold-chain') ? 'Cold-chain' : 'Any vehicle', critical: isDependencySensitive || minutes <= 20, color: isDependencySensitive ? 'orange' : 'lime', action: isDependencySensitive ? 'Review rule' : 'Find match' };
-  operations.unshift(operation);
-  addActivity(isDependencySensitive ? 'orange' : 'lime', `${quantity} ${unit} logged from ${donor}`, isDependencySensitive ? `${handling} · destination validation required` : 'Now visible to eligible riders and shelters');
-  closeModal();
-  event.target.reset();
-  renderAll();
-  showToast(isDependencySensitive ? 'Donation logged with a compatibility check' : 'Donation added to the dispatch queue');
-});
-
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal(); });
-renderAll();
+function showToast(message, error = false) { const toast = $('#toast'); if (!toast) return; $('#toast-message').textContent = message; toast.classList.toggle('error', error); toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 3500); }
