@@ -27,7 +27,9 @@ button { cursor: pointer; border: 0; }
 
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: 246px; display: flex; flex-direction: column; padding: 25px 16px 16px; background: #f0f5ee; border-right: 1px solid #e0e8df; }
-.brand-lockup { display: flex; align-items: center; gap: 11px; padding: 0 11px 26px; }
+.brand-lockup { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 7px 24px; }
+.brand-logo { display: block; width: 208px; height: 99px; object-fit: contain; object-position: center; mix-blend-mode: multiply; }
+.brand-tagline { max-width: 205px; color: #166b70; font-family: "Plus Jakarta Sans", sans-serif; font-size: 10px; line-height: 1.35; letter-spacing: .025em; font-weight: 700; }
 .brand-mark { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; gap: 2px; border-radius: 10px; background: var(--ink); transform: rotate(-6deg); }
 .brand-mark span { width: 4px; border-radius: 4px; background: var(--lime); display: block; }
 .brand-mark span:nth-child(1) { height: 11px; }.brand-mark span:nth-child(2) { height: 18px; }.brand-mark span:nth-child(3) { height: 14px; }

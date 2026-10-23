@@ -1,6 +1,8 @@
-# ReliefLoop
+# Sanjeevani
 
-ReliefLoop is a browser-based prototype for coordinating perishable surplus, volunteer riders, and changing shelter demand in real time.
+Sanjeevani is a browser-based prototype for coordinating perishable surplus, volunteer riders, and changing shelter demand in real time.
+
+**Delivering What Matters When It Matters.**
 
 ## Run locally
 
