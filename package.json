@@ -1,0 +1,10 @@
+{
+  "name": "reliefloop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A live civic-aid dispatch prototype for perishable surplus and fragile aid.",
+  "scripts": {
+    "dev": "python -m http.server 4173",
+    "start": "python -m http.server 4173"
+  }
+}
